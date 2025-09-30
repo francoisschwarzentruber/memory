@@ -56,7 +56,7 @@
 
         .grid-wrap {
             padding: 10px;
-            overflow: auto
+            overflow: auto;
         }
 
         .grid {
@@ -64,6 +64,8 @@
             grid-auto-rows: var(--cell-size);
             gap: 6px;
             background-color: black;
+            position: absolute;
+
         }
 
         .cell {
@@ -82,6 +84,7 @@
 
         .cell.free {
             background: black;
+            border-color: gray;
         }
 
         .cell.allocated {
@@ -101,6 +104,10 @@
             font-size: 14px
         }
 
+        .cell.free .val {
+            color: grey;
+        }
+
         .cell .char {
             position: absolute;
             bottom: 0px;
@@ -111,7 +118,7 @@
 
         .cell.selected {
             outline: 3px solid rgba(59, 130, 246);
-            outline-offset: 2px
+            outline-offset: 0px
         }
 
         .status {
@@ -133,6 +140,29 @@
             display: none
         }
 
+        svg {
+            position: absolute;
+        }
+
+        svg.arrows {
+            position: absolute;
+            top: 0;
+            left: 0;
+            pointer-events: none;
+            z-index: 0;
+            overflow: visible;
+        }
+
+        line {
+            stroke-width: 2;
+            stroke: white;
+        }
+
+        svg {
+            position: absolute;
+            pointer-events: none;
+        }
+
         @media (max-width:600px) {
             :root {
                 --cell-size: 36px
@@ -143,7 +173,11 @@
 
 <body>
     <h1>Play with the memory</h1>
-
+    <div class="status" id="status">Ready</div>
+    <div class="help">
+        Click/Drag to allocate / select; Delete deallocate selected cells. Typing writes values directly into selected
+        cells. Integers are stored little-endian. * to toggle between value / pointer.
+    </div>
     <div class="controls">
         <label class="small">Rows <input id="rows" type="number" min="1" value="16"></label>
         <label class="small">Cols <input id="cols" type="number" min="1" value="16"></label>
@@ -154,13 +188,10 @@
 
     <div class="grid-wrap">
         <div id="grid" class="grid"></div>
+        <svg id="svgEl"></svg>
     </div>
 
-    <div class="status" id="status">Ready</div>
-    <div class="help">
-        Click/Drag to allocate / select; Delete deallocate selected cells. Typing writes values directly into selected
-        cells. Integers are stored little-endian.
-    </div>
+
 
     <script>
         (function () {
@@ -175,7 +206,7 @@
             let inputBuffer = "";
 
             function makeMemory(size) {
-                return Array.from({ length: size }, () => ({ value: 0, allocated: 0 }));
+                return Array.from({ length: size }, () => ({ value: 0, allocated: 0, isPointer: false }));
             }
 
             function syncGridTemplate() {
@@ -204,6 +235,7 @@
 
                     gridEl.appendChild(d);
                 });
+                drawArrows();
             }
 
             function setStatus(s) { statusEl.textContent = s; }
@@ -303,8 +335,64 @@
                         setStatus('Typing: ' + inputBuffer);
                         e.preventDefault();
                     }
+                    else if (e.key == '*') {
+                        const arr = Array.from(selected).sort((a, b) => a - b);
+                        const i = arr[0];
+                        memory[i].isPointer = !memory[i].isPointer;
+                        render();
+                    }
                 commitTypedValue(inputBuffer);
             });
+
+
+            function drawArrows() {
+                svgEl.innerHTML = '';
+                const rect = gridEl.getBoundingClientRect();
+                const cellsEl = gridEl.children;
+                memory.forEach((cell, i) => {
+                    if (cell.isPointer && cell.allocated) {
+                        const pointerTarget = memory[i].value;
+                        const srcEl = cellsEl[i];
+                        const tgtEl = cellsEl[pointerTarget];
+                        if (srcEl && tgtEl) {
+                            const srect = srcEl.getBoundingClientRect();
+                            const trect = tgtEl.getBoundingClientRect();
+                            const x1 = srect.left + srect.width / 2 - rect.left;
+                            const y1 = srect.top + srect.height / 2 - rect.top;
+                            const x2 = trect.left + trect.width / 2 - rect.left;
+                            const y2 = ((trect.top > srect.top) ? trect.top : (trect.top == srect.top) ? (trect.bottom + trect.top) / 2 : trect.bottom) - rect.top;
+                            const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                            line.setAttribute('x1', x1);
+                            line.setAttribute('y1', y1);
+                            line.setAttribute('x2', x2);
+                            line.setAttribute('y2', y2);
+                            line.setAttribute('stroke', 'white');
+                            line.setAttribute('marker-end', 'url(#arrowhead)');
+                            svgEl.appendChild(line);
+                        }
+                    }
+                });
+                // add arrowhead marker
+                if (!svgEl.querySelector('marker')) {
+                    const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+                    const marker = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
+                    marker.setAttribute('id', 'arrowhead');
+                    marker.setAttribute('markerWidth', '6');
+                    marker.setAttribute('markerHeight', '6');
+                    marker.setAttribute('refX', '5');
+                    marker.setAttribute('refY', '2');
+                    marker.setAttribute('orient', 'auto');
+                    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+                    path.setAttribute('d', 'M0,0 L0,4 L6,2 Z');
+                    path.setAttribute('fill', 'white');
+                    marker.appendChild(path);
+                    defs.appendChild(marker);
+                    svgEl.appendChild(defs);
+                }
+                svgEl.setAttribute('width', rect.width);
+                svgEl.setAttribute('height', rect.height);
+            }
+
 
             function exportJSON() {
                 const data = JSON.stringify(memory);
