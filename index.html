@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Memory Grid — Bytes</title>
+    <style>
+        :root {
+            --cell-size: 44px;
+            --gap: 6px;
+            font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial
+        }
+
+        body {
+            margin: 0;
+            background: #000000;
+            color: #0f172a;
+            padding: 18px;
+            color: white;
+        }
+
+        h1 {
+            font-size: 18px;
+            margin: 0 0 12px;
+            color: white;
+        }
+
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
+            margin-bottom: 12px;
+            display: none;
+        }
+
+        input[type=number],
+        input[type=text] {
+            padding: 6px;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            color: white;
+            background-color: black;
+        }
+
+        button,
+        label.file {
+            padding: 8px 10px;
+            border-radius: 8px;
+            border: 1px solid #e2e8f0;
+            background: blueviolet;
+            cursor: pointer;
+            color: white;
+        }
+
+        .grid-wrap {
+            padding: 10px;
+            overflow: auto
+        }
+
+        .grid {
+            display: inline-block;
+            grid-auto-rows: var(--cell-size);
+            gap: 6px;
+            background-color: black;
+        }
+
+        .cell {
+            width: var(--cell-size);
+            height: var(--cell-size);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 6px;
+            border: 1px solid #e2e8f0;
+            user-select: none;
+            position: relative;
+            cursor: pointer;
+            background: black;
+        }
+
+        .cell.free {
+            background: black;
+        }
+
+        .cell.allocated {
+            background: linear-gradient(160deg, #084600, #008d18)
+        }
+
+        .cell .idx {
+            position: absolute;
+            top: 0px;
+            left: 8px;
+            font-size: 10px;
+            color: #ffe5ad;
+        }
+
+        .cell .val {
+            font-family: monospace;
+            font-size: 14px
+        }
+
+        .cell .char {
+            position: absolute;
+            bottom: 0px;
+            right: 8px;
+            font-size: 10px;
+            color: #cbe1ff;
+        }
+
+        .cell.selected {
+            outline: 3px solid rgba(59, 130, 246);
+            outline-offset: 2px
+        }
+
+        .status {
+            margin-top: 10px;
+            color: #334155
+        }
+
+        .help {
+            font-size: 12px;
+            color: #64748b;
+            margin-top: 6px
+        }
+
+        .small {
+            font-size: 13px
+        }
+
+        .file input {
+            display: none
+        }
+
+        @media (max-width:600px) {
+            :root {
+                --cell-size: 36px
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Play with the memory</h1>
+
+    <div class="controls">
+        <label class="small">Rows <input id="rows" type="number" min="1" value="16"></label>
+        <label class="small">Cols <input id="cols" type="number" min="1" value="16"></label>
+        <button id="clear">Clear</button>
+        <label class="file">Import <input id="importFile" type="file" accept="application/json"></label>
+        <button id="export">Export JSON</button>
+    </div>
+
+    <div class="grid-wrap">
+        <div id="grid" class="grid"></div>
+    </div>
+
+    <div class="status" id="status">Ready</div>
+    <div class="help">
+        Click/Drag to allocate / select; Delete deallocate selected cells. Typing writes values directly into selected
+        cells. Integers are stored little-endian.
+    </div>
+
+    <script>
+        (function () {
+            let memorySize = 256;
+            let memory = [];
+            const gridEl = document.getElementById('grid');
+            const statusEl = document.getElementById('status');
+            let mouseDown = false;
+            let paintMode = null;
+            let selected = new Set();
+            let lastSelected = null;
+            let inputBuffer = "";
+
+            function makeMemory(size) {
+                return Array.from({ length: size }, () => ({ value: 0, allocated: 0 }));
+            }
+
+            function syncGridTemplate() {
+                gridEl.style.gridTemplateColumns = `repeat(${cols}, minmax(40px, var(--cell-size)))`;
+            }
+
+
+            function render() {
+                gridEl.innerHTML = '';
+                memory.forEach((cell, i) => {
+                    const d = document.createElement('div');
+                    d.className = 'cell ' + (cell.allocated ? 'allocated' : 'free') + (selected.has(i) ? ' selected' : '');
+                    d.dataset.index = i;
+                    if (cell.allocated)
+                        d.style.background = `hsl(${cell.allocated}, 100%, 30%)`;
+                    const val = document.createElement('div'); val.className = 'val'; val.textContent = cell.value//.toString(10).padStart(2, '0');
+                    //cell.allocated ? cell.value.toString(10).padStart(2, '0').toUpperCase() : '--';
+                    const idx = document.createElement('div'); idx.className = 'idx'; idx.textContent = i;
+                    d.appendChild(val); d.appendChild(idx);
+                    const char = document.createElement('div'); char.className = 'char'; char.textContent = String.fromCharCode(cell.value);
+                    d.appendChild(val); d.appendChild(idx); d.appendChild(char);
+
+                    d.addEventListener('mousedown', (e) => { e.preventDefault(); onCellDown(i, e); });
+                    d.addEventListener('mouseenter', (e) => { if (mouseDown) onCellEnter(i, e); });
+                    d.addEventListener('click', (e) => { onCellClick(i, e); });
+
+                    gridEl.appendChild(d);
+                });
+            }
+
+            function setStatus(s) { statusEl.textContent = s; }
+
+            function onCellDown(i, e) {
+                inputBuffer = '';
+                if (memory[i].allocated)
+
+                    selected.clear();
+                mouseDown = true;
+                paintMode = memory[i].allocated ? memory[i].allocated : Math.round(60 + Math.random() * 110);
+                applyPaint(i, paintMode, e.shiftKey);
+                selected.add(i);
+            }
+
+            function onCellEnter(i, e) {
+                if (!mouseDown) return;
+                selected.add(i);
+                applyPaint(i, paintMode, e.shiftKey);
+            }
+
+            window.addEventListener('mouseup', () => { mouseDown = false; paintMode = null; });
+
+            function applyPaint(i, mode, shift) {
+                memory[i].allocated = mode;
+                if (shift) { selected.add(i); lastSelected = i; }
+                render();
+            }
+
+            function onCellClick(i, e) {
+                if (mouseDown) return;
+                if (e.shiftKey && lastSelected !== null) {
+                    const a = Math.min(lastSelected, i), b = Math.max(lastSelected, i);
+                    for (let k = a; k <= b; k++) selected.add(k);
+                } else if (e.ctrlKey || e.metaKey) {
+                    if (selected.has(i)) selected.delete(i); else selected.add(i);
+                    lastSelected = i;
+                } else {
+                    if (selected.size === 1 && selected.has(i)) { selected.clear(); lastSelected = null; }
+                    else { selected.clear(); selected.add(i); lastSelected = i; }
+                }
+                render();
+            }
+
+            function commitTypedValue(str) {
+                if (selected.size === 0) { setStatus('No cells selected to write to.'); return; }
+                let val;
+                if (str.startsWith('0x') || str.startsWith('0X')) val = parseInt(str, 16); else val = parseInt(str, 10);
+                const arr = Array.from(selected).sort((a, b) => a - b);
+                if (Number.isNaN(val) || val < 0) {
+                    if (str == '')
+                        return;
+                    val = str.charCodeAt(0);
+                    inputBuffer = '';
+                    selected.delete(arr[0]);
+                }
+                if (arr.length === 1) {
+                    if (val > 255) { setStatus('Single cell can only hold 0-255.'); return; }
+                    if (memory[arr[0]].allocated) memory[arr[0]].value = val;
+                    setStatus(`Wrote ${val} to cell ${arr[0]}.`);
+                } else {
+                    const bytes = [];
+                    let tmp = val;
+                    for (let i = 0; i < arr.length; i++) { bytes.push(tmp & 0xff); tmp >>= 8; }
+                    if (tmp > 0) { setStatus('Value too large for selected cells.'); return; }
+                    arr.forEach((idx, j) => { if (memory[idx].allocated) memory[idx].value = bytes[j]; });
+                    setStatus(`Wrote ${val} across ${arr.length} cells (little-endian).`);
+                }
+                render();
+            }
+
+            // typing handler
+            window.addEventListener('keydown', (e) => {
+                if (e.key === 'Delete') {
+                    for (const i of selected)
+                        memory[i].allocated = false;
+                    selected.clear();
+                    render();
+                }
+                else
+                    if (e.key === 'Enter') {
+                        if (inputBuffer !== '') {
+                            commitTypedValue(inputBuffer);
+                            inputBuffer = '';
+                        }
+                        e.preventDefault();
+                    } else if (e.key === 'Escape') {
+                        inputBuffer = ''; setStatus('Input cancelled.');
+                        selected.clear();
+                        render();
+                    } else if (e.key === 'Backspace') {
+                        inputBuffer = inputBuffer.slice(0, -1);
+                        setStatus('Typing: ' + inputBuffer);
+                        e.preventDefault();
+                    } else if (/^[0-9a-zA-ZxX]$/.test(e.key)) {
+                        inputBuffer += e.key;
+                        setStatus('Typing: ' + inputBuffer);
+                        e.preventDefault();
+                    }
+                commitTypedValue(inputBuffer);
+            });
+
+            function exportJSON() {
+                const data = JSON.stringify(memory);
+                const blob = new Blob([data], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a'); a.href = url; a.download = 'memory.json'; a.click(); URL.revokeObjectURL(url);
+            }
+
+            function importJSON(file) {
+                const r = new FileReader();
+                r.onload = (ev) => {
+                    try {
+                        const parsed = JSON.parse(ev.target.result);
+                        if (!Array.isArray(parsed)) throw new Error('Invalid format');
+                        memory = parsed.map(c => ({ value: (typeof c.value === 'number' ? c.value : 0), allocated: !!c.allocated }));
+                        const n = memory.length; const r0 = Math.max(1, Math.floor(Math.sqrt(n)));
+                        rows = r0; cols = Math.ceil(n / r0);
+                        document.getElementById('rows').value = rows; document.getElementById('cols').value = cols;
+                        selected.clear(); lastSelected = null; render(); setStatus('Imported memory.');
+                    } catch (err) { setStatus('Failed to import: ' + err.message); }
+                };
+                r.readAsText(file);
+            }
+
+            function clearAll() { memory = makeMemory(memorySize); selected.clear(); lastSelected = null; render(); setStatus('Cleared memory.'); }
+
+            document.getElementById('clear').addEventListener('click', clearAll);
+            document.getElementById('export').addEventListener('click', exportJSON);
+            document.getElementById('importFile').addEventListener('change', (e) => { if (e.target.files[0]) importJSON(e.target.files[0]); });
+
+            memory = makeMemory(memorySize);
+            syncGridTemplate(); render(); setStatus('Ready');
+        })();
+    </script>
+</body>
+
+</html>
